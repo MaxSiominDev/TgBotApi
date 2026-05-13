@@ -1,0 +1,28 @@
+name: Provision VM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Write SSH key
+        run: |
+          echo "${{ secrets.VM_SSH_KEY }}" > /tmp/ssh_key
+          chmod 600 /tmp/ssh_key
+
+      - name: Run Ansible playbook
+        run: |
+          ansible-playbook \
+            -i "${{ secrets.VM_HOST }}," \
+            -u "${{ secrets.VM_USER }}" \
+            --private-key /tmp/ssh_key \
+            --ssh-extra-args="-o StrictHostKeyChecking=no" \
+            ansible/playbook.yml

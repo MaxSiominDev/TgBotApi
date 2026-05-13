@@ -1,0 +1,46 @@
+name: Build Binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'telegram-bot-api git ref (branch/tag/commit)'
+        default: 'master'
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make git zlib1g-dev libssl-dev gperf cmake clang-18 libc++-18-dev libc++abi-18-dev
+
+      - name: Clone telegram-bot-api
+        run: git clone --recursive --depth=1 --branch ${{ github.event.inputs.ref }} https://github.com/tdlib/telegram-bot-api.git
+
+      - name: Build
+        run: |
+          cd telegram-bot-api
+          mkdir build && cd build
+          CXXFLAGS="-stdlib=libc++" CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18 \
+            cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=.. ..
+          cmake --build . --target install
+
+      - name: Get commit sha
+        id: meta
+        run: |
+          cd telegram-bot-api
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: binary-${{ steps.meta.outputs.sha }}
+          name: Binary ${{ steps.meta.outputs.sha }}
+          make_latest: true
+          files: telegram-bot-api/bin/telegram-bot-api

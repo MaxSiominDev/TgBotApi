@@ -1,0 +1,3 @@
+{$DOMAIN} {
+    reverse_proxy telegram-bot-api:8081
+}

@@ -1,0 +1,94 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercase image name
+        id: image
+        run: |
+          echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Download latest binary
+        run: |
+          gh release download --pattern "telegram-bot-api" --output telegram-bot-api
+          chmod +x telegram-bot-api
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Encode configs
+        id: configs
+        run: |
+          echo "compose=$(base64 -w0 docker-compose.yml)" >> $GITHUB_OUTPUT
+          echo "caddyfile=$(base64 -w0 Caddyfile)" >> $GITHUB_OUTPUT
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
+          DOMAIN: ${{ secrets.VM_DOMAIN }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          COMPOSE_B64: ${{ steps.configs.outputs.compose }}
+          CADDYFILE_B64: ${{ steps.configs.outputs.caddyfile }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE,DOMAIN,TELEGRAM_API_ID,TELEGRAM_API_HASH,COMPOSE_B64,CADDYFILE_B64
+          script: |
+            mkdir -p /opt/telegram-bot-api
+            cd /opt/telegram-bot-api
+
+            echo "$COMPOSE_B64" | base64 -d > docker-compose.yml
+            echo "$CADDYFILE_B64" | base64 -d > Caddyfile
+
+            printf 'IMAGE=%s\nDOMAIN=%s\n' "$IMAGE" "$DOMAIN" > .env
+            printf 'TELEGRAM_API_ID=%s\nTELEGRAM_API_HASH=%s\n' \
+              "$TELEGRAM_API_ID" "$TELEGRAM_API_HASH" > .env.api
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            docker compose pull
+            docker compose up -d --remove-orphans
