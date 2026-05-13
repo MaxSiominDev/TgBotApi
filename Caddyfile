@@ -1,0 +1,9 @@
+{$DOMAIN} {
+    @authed header X-Api-Token {$API_TOKEN}
+
+    handle @authed {
+        reverse_proxy telegram-bot-api:8081
+    }
+
+    respond 403
+}

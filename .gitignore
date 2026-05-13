@@ -1,0 +1,10 @@
+telegram-bot-api
+.env
+.env.api
+data/
+__pycache__/
+*.pyc
+.venv/
+.idea/
+*.md
+.claude/
