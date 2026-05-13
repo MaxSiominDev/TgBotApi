@@ -1,0 +1,181 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  detect-arch:
+    runs-on: ubuntu-latest
+    outputs:
+      arch: ${{ steps.detect.outputs.arch }}
+      runner: ${{ steps.detect.outputs.runner }}
+    steps:
+      - name: Detect VM architecture via SSH
+        id: detect
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_key
+          chmod 600 ~/.ssh/id_key
+          UNAME=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_key "$VPS_USER@$VPS_HOST" uname -m)
+          case "$UNAME" in
+            x86_64)
+              echo "arch=amd64" >> $GITHUB_OUTPUT
+              echo "runner=ubuntu-24.04" >> $GITHUB_OUTPUT
+              ;;
+            aarch64)
+              echo "arch=arm64" >> $GITHUB_OUTPUT
+              echo "runner=ubuntu-24.04-arm" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported VM arch: $UNAME"
+              exit 1
+              ;;
+          esac
+
+  build-and-push:
+    needs: detect-arch
+    runs-on: ${{ needs.detect-arch.outputs.runner }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercase image name
+        id: image
+        run: |
+          echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Download binary for ${{ needs.detect-arch.outputs.arch }}
+        run: |
+          gh release download --pattern "telegram-bot-api-${{ needs.detect-arch.outputs.arch }}" --output telegram-bot-api
+          chmod +x telegram-bot-api
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Write SSH key
+        run: |
+          echo "${{ secrets.VPS_SSH_KEY }}" > /tmp/ssh_key
+          chmod 600 /tmp/ssh_key
+
+      - name: Run Ansible playbook
+        run: |
+          ansible-playbook \
+            -i "${{ secrets.VPS_HOST }}," \
+            -u "${{ secrets.VPS_USER }}" \
+            --private-key /tmp/ssh_key \
+            --ssh-extra-args="-o StrictHostKeyChecking=no" \
+            ansible/playbook.yml
+
+  deploy:
+    needs: [build-and-push, provision]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Encode configs
+        id: configs
+        run: |
+          echo "compose=$(base64 -w0 docker-compose.yml)" >> $GITHUB_OUTPUT
+          echo "caddyfile=$(base64 -w0 Caddyfile)" >> $GITHUB_OUTPUT
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
+          DOMAIN: ${{ secrets.VPS_DOMAIN }}
+          BOT_SERVER_IP: ${{ secrets.BOT_SERVER_IP }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          COMPOSE_B64: ${{ steps.configs.outputs.compose }}
+          CADDYFILE_B64: ${{ steps.configs.outputs.caddyfile }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE,DOMAIN,BOT_SERVER_IP,TELEGRAM_API_ID,TELEGRAM_API_HASH,COMPOSE_B64,CADDYFILE_B64
+          script: |
+            mkdir -p /opt/telegram-bot-api
+            cd /opt/telegram-bot-api
+
+            echo "$COMPOSE_B64" | base64 -d > docker-compose.yml
+            echo "$CADDYFILE_B64" | base64 -d > Caddyfile
+
+            printf 'IMAGE=%s\nDOMAIN=%s\nBOT_SERVER_IP=%s\n' "$IMAGE" "$DOMAIN" "$BOT_SERVER_IP" > .env
+            printf 'TELEGRAM_API_ID=%s\nTELEGRAM_API_HASH=%s\n' \
+              "$TELEGRAM_API_ID" "$TELEGRAM_API_HASH" > .env.api
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+
+  notify:
+    needs: [build-and-push, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Send Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BUILD_RESULT: ${{ needs.build-and-push.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          if [ "$BUILD_RESULT" = "success" ] && [ "$DEPLOY_RESULT" = "success" ]; then
+            TEXT="✅ Deploy successful
+          https://github.com/MaxSiominDev/TgBotApi/"
+          else
+            TEXT="❌ Deploy failed
+          https://github.com/MaxSiominDev/TgBotApi/<br>(build: $BUILD_RESULT, deploy: $DEPLOY_RESULT)"
+          fi
+
+          TEXT="$TEXT"
+
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -F "chat_id=${CHAT_ID}" \
+            -F "text=${TEXT}"

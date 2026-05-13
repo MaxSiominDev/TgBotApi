@@ -1,0 +1,9 @@
+{$DOMAIN} {
+    @allowed remote_ip {$BOT_SERVER_IP}
+
+    handle @allowed {
+        reverse_proxy telegram-bot-api:8081
+    }
+
+    respond 403
+}
