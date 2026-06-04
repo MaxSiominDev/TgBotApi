@@ -14,7 +14,7 @@ services:
       - "443:443"
       - "443:443/udp"
     environment:
-      - DOMAIN=${DOMAIN}
+      - DOMAINS=${DOMAINS}
       - API_TOKEN=${API_TOKEN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

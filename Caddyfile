@@ -1,4 +1,4 @@
-{$DOMAIN} {
+{$DOMAINS} {
     @authed header X-Api-Token {$API_TOKEN}
 
     handle @authed {

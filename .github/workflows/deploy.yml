@@ -122,7 +122,7 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
-          DOMAIN: ${{ secrets.VPS_DOMAIN }}
+          DOMAINS: ${{ secrets.VPS_DOMAINS }}
           API_TOKEN: ${{ secrets.API_TOKEN }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
@@ -132,7 +132,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: GHCR_TOKEN,GHCR_USER,IMAGE,DOMAIN,API_TOKEN,TELEGRAM_API_ID,TELEGRAM_API_HASH,COMPOSE_B64,CADDYFILE_B64
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE,DOMAINS,API_TOKEN,TELEGRAM_API_ID,TELEGRAM_API_HASH,COMPOSE_B64,CADDYFILE_B64
           script: |
             mkdir -p /opt/telegram-bot-api
             cd /opt/telegram-bot-api
@@ -140,7 +140,7 @@ jobs:
             echo "$COMPOSE_B64" | base64 -d > docker-compose.yml
             echo "$CADDYFILE_B64" | base64 -d > Caddyfile
 
-            printf 'IMAGE=%s\nDOMAIN=%s\nAPI_TOKEN=%s\n' "$IMAGE" "$DOMAIN" "$API_TOKEN" > .env
+            printf 'IMAGE=%s\nDOMAINS=%s\nAPI_TOKEN=%s\n' "$IMAGE" "$DOMAINS" "$API_TOKEN" > .env
             printf 'TELEGRAM_API_ID=%s\nTELEGRAM_API_HASH=%s\n' \
               "$TELEGRAM_API_ID" "$TELEGRAM_API_HASH" > .env.api
 
