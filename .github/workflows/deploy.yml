@@ -149,6 +149,28 @@ jobs:
             docker compose pull
             docker compose up -d --remove-orphans
 
+      - name: Health check
+        env:
+          DOMAINS: ${{ secrets.VPS_DOMAINS }}
+        run: |
+          set -e
+          for d in $DOMAINS; do
+            echo "Checking https://$d/health"
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              code=$(curl -sS -o /tmp/body -w '%{http_code}' "https://$d/health" || echo "000")
+              body=$(cat /tmp/body 2>/dev/null || true)
+              if [ "$code" = "200" ] && [ "$body" = "ok" ]; then
+                echo "  OK"
+                break
+              fi
+              if [ "$i" = "10" ]; then
+                echo "  FAILED: code=$code body=$body"
+                exit 1
+              fi
+              sleep 6
+            done
+          done
+
   notify:
     needs: [build-and-push, deploy]
     runs-on: ubuntu-latest

@@ -1,4 +1,8 @@
 {$DOMAINS} {
+    handle /health {
+        respond "ok" 200
+    }
+
     @authed header X-Api-Token {$API_TOKEN}
 
     handle @authed {
