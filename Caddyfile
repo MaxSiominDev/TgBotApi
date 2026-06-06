@@ -1,13 +1,15 @@
 {$DOMAINS} {
-    handle /health {
-        respond "ok" 200
-    }
-
     @authed header X-Api-Token {$API_TOKEN}
+
+    handle /health/* {
+        reverse_proxy healthcheck:8080
+    }
 
     handle @authed {
         reverse_proxy telegram-bot-api:8081
     }
 
-    respond 403
+    handle {
+        respond 403
+    }
 }

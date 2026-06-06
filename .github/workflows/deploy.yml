@@ -46,14 +46,17 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.image.outputs.name }}
+      healthcheck_image: ${{ steps.image.outputs.healthcheck }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compute lowercase image name
+      - name: Compute lowercase image names
         id: image
         run: |
-          echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+          BASE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          echo "name=$BASE" >> $GITHUB_OUTPUT
+          echo "healthcheck=${BASE}-healthcheck" >> $GITHUB_OUTPUT
 
       - name: Download binary for ${{ needs.detect-arch.outputs.arch }}
         run: |
@@ -69,7 +72,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push telegram-bot-api
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -77,6 +80,15 @@ jobs:
           tags: |
             ${{ steps.image.outputs.name }}:latest
             ${{ steps.image.outputs.name }}:${{ github.sha }}
+
+      - name: Build and push healthcheck
+        uses: docker/build-push-action@v6
+        with:
+          context: ./healthcheck
+          push: true
+          tags: |
+            ${{ steps.image.outputs.healthcheck }}:latest
+            ${{ steps.image.outputs.healthcheck }}:${{ github.sha }}
 
   provision:
     runs-on: ubuntu-latest
@@ -122,17 +134,20 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
+          HEALTHCHECK_IMAGE: ${{ needs.build-and-push.outputs.healthcheck_image }}:latest
           DOMAINS: ${{ secrets.VPS_DOMAINS }}
           API_TOKEN: ${{ secrets.API_TOKEN }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TEST_BOT_TOKEN: ${{ secrets.TEST_BOT_TOKEN }}
+          TEST_CHAT_ID: ${{ secrets.TEST_CHAT_ID }}
           COMPOSE_B64: ${{ steps.configs.outputs.compose }}
           CADDYFILE_B64: ${{ steps.configs.outputs.caddyfile }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: GHCR_TOKEN,GHCR_USER,IMAGE,DOMAINS,API_TOKEN,TELEGRAM_API_ID,TELEGRAM_API_HASH,COMPOSE_B64,CADDYFILE_B64
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE,HEALTHCHECK_IMAGE,DOMAINS,API_TOKEN,TELEGRAM_API_ID,TELEGRAM_API_HASH,TEST_BOT_TOKEN,TEST_CHAT_ID,COMPOSE_B64,CADDYFILE_B64
           script: |
             mkdir -p /opt/telegram-bot-api
             cd /opt/telegram-bot-api
@@ -140,7 +155,14 @@ jobs:
             echo "$COMPOSE_B64" | base64 -d > docker-compose.yml
             echo "$CADDYFILE_B64" | base64 -d > Caddyfile
 
-            printf 'IMAGE=%s\nDOMAINS=%s\nAPI_TOKEN=%s\n' "$IMAGE" "$DOMAINS" "$API_TOKEN" > .env
+            {
+              printf 'IMAGE=%s\n' "$IMAGE"
+              printf 'HEALTHCHECK_IMAGE=%s\n' "$HEALTHCHECK_IMAGE"
+              printf 'DOMAINS=%s\n' "$DOMAINS"
+              printf 'API_TOKEN=%s\n' "$API_TOKEN"
+              printf 'TEST_BOT_TOKEN=%s\n' "$TEST_BOT_TOKEN"
+              printf 'TEST_CHAT_ID=%s\n' "$TEST_CHAT_ID"
+            } > .env
             printf 'TELEGRAM_API_ID=%s\nTELEGRAM_API_HASH=%s\n' \
               "$TELEGRAM_API_ID" "$TELEGRAM_API_HASH" > .env.api
 
@@ -149,29 +171,51 @@ jobs:
             docker compose pull
             docker compose up -d --remove-orphans
 
+            docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+
       - name: Health check
         env:
           DOMAINS: ${{ secrets.VPS_DOMAINS }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
         run: |
           set -e
           MAX_ATTEMPTS=120  # 120 * 5s = 10 minutes
-          for d in $DOMAINS; do
-            echo "Checking https://$d/health"
-            i=1
+
+          probe() {
+            local url=$1 attempts=$2 auth=$3
+            local i=1 code ok
+            local hdr=()
+            if [ "$auth" = "auth" ]; then hdr=(-H "X-Api-Token: $API_TOKEN"); fi
             while :; do
-              code=$(curl -sS -o /tmp/body -w '%{http_code}' "https://$d/health" || echo "000")
-              body=$(cat /tmp/body 2>/dev/null || true)
-              if [ "$code" = "200" ] && [ "$body" = "ok" ]; then
-                echo "  OK (attempt $i)"
-                break
+              code=$(curl -sS "${hdr[@]}" -o /tmp/body -w '%{http_code}' "$url" || echo "000")
+              ok=$(jq -r '.ok // false' /tmp/body 2>/dev/null || echo "false")
+              if [ "$code" = "200" ] && [ "$ok" = "true" ]; then
+                echo "  OK (attempt $i): $(cat /tmp/body)"
+                return 0
               fi
-              if [ "$i" -ge "$MAX_ATTEMPTS" ]; then
-                echo "  FAILED after $i attempts: code=$code body=$body"
-                exit 1
+              if [ "$i" -ge "$attempts" ]; then
+                echo "  FAILED after $i attempts: code=$code"
+                cat /tmp/body || true
+                return 1
               fi
               i=$((i+1))
               sleep 5
             done
+          }
+
+          for d in $DOMAINS; do
+            # containers — ждём пока стек поднимется, остальные — без ретраев.
+            echo "[$d] containers"
+            probe "https://$d/health/containers" "$MAX_ATTEMPTS" noauth \
+              || { echo "::error::healthcheck failed: domain=$d check=containers"; exit 1; }
+
+            echo "[$d] telegram"
+            probe "https://$d/health/telegram" 1 auth \
+              || { echo "::error::healthcheck failed: domain=$d check=telegram"; exit 1; }
+
+            echo "[$d] send-message"
+            probe "https://$d/health/send-message" 1 auth \
+              || { echo "::error::healthcheck failed: domain=$d check=send-message"; exit 1; }
           done
 
   notify:

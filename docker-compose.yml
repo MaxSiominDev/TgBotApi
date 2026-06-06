@@ -6,6 +6,20 @@ services:
     volumes:
       - ./data:/data
 
+  healthcheck:
+    image: ${HEALTHCHECK_IMAGE}
+    restart: unless-stopped
+    environment:
+      - TEST_BOT_TOKEN=${TEST_BOT_TOKEN}
+      - TEST_CHAT_ID=${TEST_CHAT_ID}
+      - HEALTH_TOKEN=${API_TOKEN}
+      - COMPOSE_PROJECT=telegram-bot-api
+      - LOCAL_TG_API=http://telegram-bot-api:8081
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - telegram-bot-api
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -20,6 +34,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    depends_on:
+      - telegram-bot-api
+      - healthcheck
 
 volumes:
   caddy_data:
