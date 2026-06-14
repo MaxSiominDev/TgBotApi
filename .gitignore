@@ -1,6 +1,7 @@
 telegram-bot-api
 .env
 .env.api
+.env.monitor
 data/
 __pycache__/
 *.pyc

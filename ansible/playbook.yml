@@ -76,6 +76,11 @@
         rule: allow
         port: "443"
 
+    - name: Allow monitoring UI through UFW
+      ufw:
+        rule: allow
+        port: "19999"
+
     - name: Enable UFW with default deny
       ufw:
         state: enabled

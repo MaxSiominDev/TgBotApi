@@ -13,3 +13,7 @@
         respond 403
     }
 }
+
+{$MONITOR_ADDRESSES} {
+    reverse_proxy monitor-auth:8080
+}

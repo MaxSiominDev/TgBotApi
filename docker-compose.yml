@@ -20,6 +20,34 @@ services:
     depends_on:
       - telegram-bot-api
 
+  netdata:
+    image: netdata/netdata:stable
+    restart: unless-stopped
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      - DO_NOT_TRACK=1
+    volumes:
+      - ./netdata.conf:/etc/netdata/netdata.conf:ro
+      - netdata_lib:/var/lib/netdata
+      - netdata_cache:/var/cache/netdata
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /:/host/root:ro,rslave
+
+  monitor-auth:
+    image: ${MONITOR_AUTH_IMAGE}
+    restart: unless-stopped
+    env_file: .env.monitor
+    environment:
+      - NETDATA_URL=http://netdata:19999
+    depends_on:
+      - netdata
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -27,9 +55,11 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+      - "19999:19999"
     environment:
       - DOMAINS=${DOMAINS}
       - API_TOKEN=${API_TOKEN}
+      - MONITOR_ADDRESSES=${MONITOR_ADDRESSES}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -37,7 +67,10 @@ services:
     depends_on:
       - telegram-bot-api
       - healthcheck
+      - monitor-auth
 
 volumes:
   caddy_data:
   caddy_config:
+  netdata_lib:
+  netdata_cache:

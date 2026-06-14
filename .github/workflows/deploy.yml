@@ -47,6 +47,7 @@ jobs:
     outputs:
       image: ${{ steps.image.outputs.name }}
       healthcheck_image: ${{ steps.image.outputs.healthcheck }}
+      monitor_auth_image: ${{ steps.image.outputs.monitor_auth }}
 
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +58,7 @@ jobs:
           BASE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
           echo "name=$BASE" >> $GITHUB_OUTPUT
           echo "healthcheck=${BASE}-healthcheck" >> $GITHUB_OUTPUT
+          echo "monitor_auth=${BASE}-monitor-auth" >> $GITHUB_OUTPUT
 
       - name: Download binary for ${{ needs.detect-arch.outputs.arch }}
         run: |
@@ -89,6 +91,15 @@ jobs:
           tags: |
             ${{ steps.image.outputs.healthcheck }}:latest
             ${{ steps.image.outputs.healthcheck }}:${{ github.sha }}
+
+      - name: Build and push monitor-auth
+        uses: docker/build-push-action@v6
+        with:
+          context: ./monitor-auth
+          push: true
+          tags: |
+            ${{ steps.image.outputs.monitor_auth }}:latest
+            ${{ steps.image.outputs.monitor_auth }}:${{ github.sha }}
 
   provision:
     runs-on: ubuntu-latest
@@ -127,6 +138,7 @@ jobs:
         run: |
           echo "compose=$(base64 -w0 docker-compose.yml)" >> $GITHUB_OUTPUT
           echo "caddyfile=$(base64 -w0 Caddyfile)" >> $GITHUB_OUTPUT
+          echo "netdataconf=$(base64 -w0 netdata.conf)" >> $GITHUB_OUTPUT
 
       - name: Deploy
         uses: appleboy/ssh-action@v1
@@ -135,36 +147,51 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
           HEALTHCHECK_IMAGE: ${{ needs.build-and-push.outputs.healthcheck_image }}:latest
+          MONITOR_AUTH_IMAGE: ${{ needs.build-and-push.outputs.monitor_auth_image }}:latest
           DOMAINS: ${{ secrets.VPS_DOMAINS }}
           API_TOKEN: ${{ secrets.API_TOKEN }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TEST_BOT_TOKEN: ${{ secrets.TEST_BOT_TOKEN }}
           TEST_CHAT_ID: ${{ secrets.TEST_CHAT_ID }}
+          MONITOR_USER: ${{ secrets.MONITOR_USER }}
+          MONITOR_PASSWORD: ${{ secrets.MONITOR_PASSWORD }}
           COMPOSE_B64: ${{ steps.configs.outputs.compose }}
           CADDYFILE_B64: ${{ steps.configs.outputs.caddyfile }}
+          NETDATA_CONF_B64: ${{ steps.configs.outputs.netdataconf }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: GHCR_TOKEN,GHCR_USER,IMAGE,HEALTHCHECK_IMAGE,DOMAINS,API_TOKEN,TELEGRAM_API_ID,TELEGRAM_API_HASH,TEST_BOT_TOKEN,TEST_CHAT_ID,COMPOSE_B64,CADDYFILE_B64
+          envs: GHCR_TOKEN,GHCR_USER,IMAGE,HEALTHCHECK_IMAGE,MONITOR_AUTH_IMAGE,DOMAINS,API_TOKEN,TELEGRAM_API_ID,TELEGRAM_API_HASH,TEST_BOT_TOKEN,TEST_CHAT_ID,MONITOR_USER,MONITOR_PASSWORD,COMPOSE_B64,CADDYFILE_B64,NETDATA_CONF_B64
           script: |
             mkdir -p /opt/telegram-bot-api
             cd /opt/telegram-bot-api
 
             echo "$COMPOSE_B64" | base64 -d > docker-compose.yml
             echo "$CADDYFILE_B64" | base64 -d > Caddyfile
+            echo "$NETDATA_CONF_B64" | base64 -d > netdata.conf
 
+            MONITOR_ADDRESSES=$(for d in $DOMAINS; do printf '%s:19999 ' "$d"; done)
             {
               printf 'IMAGE=%s\n' "$IMAGE"
               printf 'HEALTHCHECK_IMAGE=%s\n' "$HEALTHCHECK_IMAGE"
+              printf 'MONITOR_AUTH_IMAGE=%s\n' "$MONITOR_AUTH_IMAGE"
               printf 'DOMAINS=%s\n' "$DOMAINS"
               printf 'API_TOKEN=%s\n' "$API_TOKEN"
               printf 'TEST_BOT_TOKEN=%s\n' "$TEST_BOT_TOKEN"
               printf 'TEST_CHAT_ID=%s\n' "$TEST_CHAT_ID"
+              printf 'MONITOR_ADDRESSES=%s\n' "$MONITOR_ADDRESSES"
             } > .env
             printf 'TELEGRAM_API_ID=%s\nTELEGRAM_API_HASH=%s\n' \
               "$TELEGRAM_API_ID" "$TELEGRAM_API_HASH" > .env.api
+
+            # Monitoring credentials: written literally and read by monitor-auth via
+            # env_file, so special characters (e.g. $) are never re-interpreted.
+            {
+              printf 'MONITOR_USER=%s\n' "$MONITOR_USER"
+              printf 'MONITOR_PASSWORD=%s\n' "$MONITOR_PASSWORD"
+            } > .env.monitor
 
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
