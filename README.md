@@ -43,6 +43,27 @@ Secrets it expects:
 | `MONITOR_USER`, `MONITOR_PASSWORD` | metrics page login |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | deploy notifications |
 
+Plus repository **variables** (Settings → Variables): `MONITOR_DOMAIN` - the metrics page's domain
+(required); `PROXY_NETWORK` - set only to run behind a reverse proxy (see below)
+
+## Behind a reverse proxy
+
+By default the stack owns ports 80/443 and manages its own TLS. To run it **behind an existing
+reverse proxy** instead (another Caddy / nginx / Traefik that already terminates TLS on the host),
+set the repository **variable** `PROXY_NETWORK` to the name of a shared external Docker network
+(e.g. `edge`). Setting it both enables this mode and selects the network. The deploy then layers
+`docker-compose.proxy.yml`, which:
+
+- drops Caddy's published ports and joins that network — create it once on the host, e.g.
+  `docker network create edge`;
+- makes Caddy serve plain HTTP; your outer proxy reaches it at `tgbot-caddy:80` and provides HTTPS;
+- serves the metrics page on `MONITOR_DOMAIN` too — your outer proxy must route that domain as well.
+
+The network and your outer proxy's routing for these domains must already exist before you
+deploy in this mode — the post-deploy smoke test reaches the bot through the outer proxy over HTTPS.
+
+Standalone deployments leave `PROXY_NETWORK` unset and keep their own ports and TLS.
+
 ## Use
 
 Every API call needs the token:
@@ -57,4 +78,4 @@ Wrong token or none, you get a `403`. Point your bot library's API root at
 Health: `GET /health/containers` (no auth), `/health/telegram` and `/health/send-message`
 (both need the token).
 
-Metrics: open `https://your-domain.com:19999`, log in, and you get CPU/RAM/disk with history.
+Metrics: open `https://<MONITOR_DOMAIN>`, log in, and you get CPU/RAM/disk with history.

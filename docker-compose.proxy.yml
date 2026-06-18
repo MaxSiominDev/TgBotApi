@@ -1,0 +1,13 @@
+services:
+  caddy:
+    ports: !override []
+    networks:
+      default: {}
+      edge:
+        aliases:
+          - tgbot-caddy
+
+networks:
+  edge:
+    external: true
+    name: ${PROXY_NETWORK:-edge}

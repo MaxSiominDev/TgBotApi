@@ -55,7 +55,6 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
-      - "19999:19999"
     environment:
       - DOMAINS=${DOMAINS}
       - API_TOKEN=${API_TOKEN}
